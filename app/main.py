@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from app.drift import drift_report
 from src.features import STRIDE, WINDOW, extract_features, make_windows
 
-MIN_DRIFT_WINDOWS = 50
+MIN_DRIFT_WINDOWS = 30  # per predicted class; PSI is unreliable on tiny batches
 MIN_DRIFT_SAMPLES = WINDOW + STRIDE * (MIN_DRIFT_WINDOWS - 1)
 
 state: dict = {}
@@ -26,7 +26,7 @@ def load_models() -> None:
     state["classes"] = meta["classes"]
     state["std"] = float(meta["std"])
     state["rf"] = joblib.load(model_dir / "rf.joblib")
-    state["reference"] = json.loads((model_dir / "reference_features.json").read_text())
+    state["reference"] = json.loads((model_dir / "reference_by_class.json").read_text())
     state["cnn"] = None
     if os.environ.get("ENABLE_CNN", "1") != "0":
         try:
@@ -63,7 +63,7 @@ class PredictRequest(BaseModel):
 
 class DriftRequest(BaseModel):
     signal: list[float] = Field(..., min_length=MIN_DRIFT_SAMPLES, max_length=2_000_000,
-                                description=f"A longer recording (at least {MIN_DRIFT_SAMPLES} samples)")
+                                description=f"A recording of at least {MIN_DRIFT_SAMPLES} samples ({MIN_DRIFT_WINDOWS} windows)")
 
 
 def _class_name(c) -> str:
@@ -118,6 +118,29 @@ def predict(req: PredictRequest):
 
 @app.post("/drift")
 def drift(req: DriftRequest):
+    """Class-conditional drift: each window is classified, then windows of each predicted class
+    are compared with the training windows of that same class (so the class mix cannot cause false alarms)."""
     x = _check_finite(req.signal)
     feats = extract_features(make_windows(x))
-    return drift_report(state["reference"], feats)
+    names = np.array([_class_name(c) for c in state["rf"].predict(feats)])
+
+    classes = {}
+    for cname in sorted(set(names)):
+        mask = names == cname
+        n = int(mask.sum())
+        if n < MIN_DRIFT_WINDOWS or cname not in state["reference"]:
+            classes[cname] = {"n_windows": n, "status": f"insufficient data (need >= {MIN_DRIFT_WINDOWS} windows)"}
+            continue
+        rep = drift_report(state["reference"][cname], feats[mask])
+        classes[cname] = {
+            "n_windows": n,
+            "status": "drift" if rep["drift_detected"] else "ok",
+            "n_features_drifted": rep["n_features_drifted"],
+            "drifted_features": [{"feature": k, "out_of_range": v["out_of_range"]} for k, v in rep["features"].items() if v["drifted"]],
+        }
+    checked = [c for c in classes.values() if c["status"] in ("ok", "drift")]
+    return {
+        "n_windows": int(len(feats)),
+        "drift_detected": any(c["status"] == "drift" for c in checked) if checked else None,
+        "classes": classes,
+    }

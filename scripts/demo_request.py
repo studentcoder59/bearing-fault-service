@@ -28,8 +28,19 @@ for model in ("rf", "cnn"):
         b = r.json()
         print(f"{model:3} true={true_label:10} -> {b['label']:10} conf={b['confidence']:.3f}  {b['latency_ms']:.2f} ms")
 
-mixed = np.concatenate([s[:30_000] for s in signals.values()])
-for name, sig in [("recording mixing all 4 states", mixed), ("same recording amplified 3x", mixed * 3)]:
+# Drift: recordings are mixed from all 4 states; each window is compared with training windows of its own class
+def recording(files):
+    return np.concatenate([load_signal(RAW_DIR / f)[:40_000] for f in files])
+
+
+cases = [
+    ("training load 2 HP (should be OK)", recording(["99.mat", "107.mat", "120.mat", "132.mat"])),
+    ("unseen load 3 HP", recording(FILES.values())),
+    ("load 3 HP amplified 3x (should drift)", recording(FILES.values()) * 3),
+]
+for name, sig in cases:
     r = httpx.post(f"{URL}/drift", json={"signal": sig.tolist()}, timeout=60).json()
     print(f"\n== /drift: {name} ==")
-    print("drift_detected:", r["drift_detected"], "| features drifted:", r["n_features_drifted"], "of", len(r["features"]))
+    print("drift_detected:", r["drift_detected"])
+    for cname, c in r["classes"].items():
+        print(f"   {cname:10} windows={c['n_windows']:3}  {c['status']}  drifted features: {c.get('n_features_drifted', '-')}")

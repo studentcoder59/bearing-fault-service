@@ -1,39 +1,30 @@
-"""Data-drift check: compare incoming feature distributions with the training distribution."""
+"""Data-drift check: are incoming feature values still inside the range seen in training?
+
+For each feature we measure the share of incoming windows that fall outside the
+1st-99th percentile range of the training windows of the same class. Healthy data
+should have only a few percent outside; a real shift pushes most windows outside.
+(An earlier PSI/KS version false-alarmed on real data: one recording is much narrower
+than the pooled training data, which those tests read as 'drift'.)
+"""
 import numpy as np
-from scipy.stats import ks_2samp
 
 from src.features import FEATURE_NAMES
 
-PSI_THRESHOLD = 0.2      # common rule of thumb: >0.2 = significant shift
-MIN_FEATURES_DRIFTED = 3  # flag overall drift only if several features shift together
-BINS = 5                 # few bins: PSI is biased upward on small batches
+RANGE_PERCENTILES = (1, 99)
+OUT_OF_RANGE_THRESHOLD = 0.25  # feature drifted if >25% of windows fall outside the training range
+MIN_FEATURES_DRIFTED = 3       # report drift only if several features shift together
 
 
-def psi(reference: np.ndarray, current: np.ndarray, bins: int = BINS) -> float:
-    """Population Stability Index between two 1-D samples (bins from reference quantiles)."""
-    edges = np.unique(np.quantile(reference, np.linspace(0, 1, bins + 1)))
-    if len(edges) < 3:
-        return 0.0
-    edges[0], edges[-1] = -np.inf, np.inf
-    ref_p = np.histogram(reference, edges)[0] / len(reference)
-    cur_p = np.histogram(current, edges)[0] / len(current)
-    ref_p, cur_p = np.clip(ref_p, 1e-4, None), np.clip(cur_p, 1e-4, None)
-    return float(np.sum((cur_p - ref_p) * np.log(cur_p / ref_p)))
+def out_of_range_rate(reference: np.ndarray, current: np.ndarray) -> float:
+    lo, hi = np.percentile(reference, RANGE_PERCENTILES)
+    return float(np.mean((current < lo) | (current > hi)))
 
 
 def drift_report(reference: dict, features: np.ndarray) -> dict:
     per_feature = {}
     for i, name in enumerate(FEATURE_NAMES):
-        ref = np.asarray(reference[name], dtype=float)
-        cur = features[:, i]
-        stat, p = ks_2samp(ref, cur)
-        score = psi(ref, cur)
-        per_feature[name] = {
-            "psi": round(score, 4),
-            "ks_statistic": round(float(stat), 4),
-            "ks_p_value": round(float(p), 6),
-            "drifted": bool(score > PSI_THRESHOLD),
-        }
+        rate = out_of_range_rate(np.asarray(reference[name], dtype=float), features[:, i])
+        per_feature[name] = {"out_of_range": round(rate, 3), "drifted": bool(rate > OUT_OF_RANGE_THRESHOLD)}
     n_drifted = sum(v["drifted"] for v in per_feature.values())
     return {
         "n_windows": int(len(features)),

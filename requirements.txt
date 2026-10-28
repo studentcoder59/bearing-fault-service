@@ -6,3 +6,6 @@ joblib
 matplotlib
 pytest
 torch
+fastapi
+uvicorn
+httpx

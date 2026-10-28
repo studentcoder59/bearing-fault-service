@@ -1,5 +1,5 @@
 venv/
 __pycache__/
 data/raw/*.mat
-models/*.joblib
 .ipynb_checkpoints/
+.pytest_cache/

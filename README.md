@@ -1,3 +1,13 @@
+---
+title: Bearing Fault Detection
+emoji: ⚙️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Bearing Fault Detection Service
 
 End-to-end ML service: vibration signals -> features -> model -> REST API -> Docker -> deployed, with drift monitoring.
